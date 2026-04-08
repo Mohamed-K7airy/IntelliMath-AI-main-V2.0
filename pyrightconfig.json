@@ -1,0 +1,12 @@
+{
+  "include": ["backend", "math_engine/math_engine"],
+  "exclude": ["node_modules", "dist", "**/__pycache__"],
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": ["backend", "math_engine", "math_engine/math_engine"]
+    }
+  ],
+  "reportMissingImports": "warning"
+}
+
