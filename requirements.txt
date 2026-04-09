@@ -14,4 +14,6 @@ passlib[bcrypt]
 supabase
 langgraph
 typing_extensions
+dspy-ai
+huggingface-hub
 

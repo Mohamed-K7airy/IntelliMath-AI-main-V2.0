@@ -218,6 +218,7 @@ class QuestionRequest(BaseModel):
     history: list[dict[str, Any]] = Field(default_factory=list)
     mode: str = "general"
     image_data: Optional[str] = None
+    user_id: Optional[str] = None
 
 class HintRequest(BaseModel):
     question: str
@@ -259,13 +260,13 @@ def run_solver(fn, *args, **kwargs):
 # MAIN PIPELINE
 # ─────────────────────────────────────────────
 
-def route_and_solve(question: str, history: Optional[list[dict[str, Any]]] = None, mode: str = "general") -> dict[str, Any]:
+async def route_and_solve(question: str, history: Optional[list[dict[str, Any]]] = None, mode: str = "general", user_id: str = None) -> dict[str, Any]:
 
     if history is None:
         history = []
 
     raw_question = (question or "").strip()
-    logger.info("Question: %s", raw_question)
+    logger.info("Question: %s | User: %s", raw_question, user_id)
 
     if llm is None:
         return {
@@ -321,7 +322,7 @@ def route_and_solve(question: str, history: Optional[list[dict[str, Any]]] = Non
             elif mode == "steps":
                 chat_question = f"{raw_question}\n\nPlease respond with a clear step-by-step explanation."
 
-            answer = llm.chat(chat_question, history)
+            answer = await llm.chat(chat_question, history, user_id=user_id)
 
             return attach_presentation_fields(
                 question=raw_question,
@@ -425,6 +426,14 @@ def route_and_solve(question: str, history: Optional[list[dict[str, Any]]] = Non
         except Exception as e:
             logger.warning("Steps (mode=steps) generation failed: %s", e)
 
+    # 7️⃣ Wrap math result in friendly memory-aware response if user_id is present
+    if user_id and result.get("success"):
+        try:
+            friendly_answer = await llm.chat_with_math(raw_question, result, history, user_id=user_id)
+            result["final_answer"] = friendly_answer
+        except Exception as e:
+            logger.warning("Friendly math response failed: %s", e)
+
     return attach_presentation_fields(
         question=raw_question,
         branch=branch,
@@ -438,7 +447,7 @@ def route_and_solve(question: str, history: Optional[list[dict[str, Any]]] = Non
 
 @app.post("/solve")
 async def solve(req: QuestionRequest):
-    return route_and_solve(req.question, req.history, req.mode)
+    return await route_and_solve(req.question, req.history, req.mode, user_id=req.user_id)
 
 
 @app.post("/solve_stream")
@@ -482,13 +491,12 @@ async def solve_stream(req: QuestionRequest):
                 enhanced_prompt = f"Image Description (extracted by Vision Scout):\n{image_context}\n\nUser Question:\n{messages[-1]['content']}"
                 messages[-1]["content"] = enhanced_prompt
                 
-                # 3. Stream from the MAIN model as normal
-                streamer = llm_local.stream_chat(messages)
+                # 3. Stream from the MAIN model with memory
+                async for chunk in llm_local.stream_chat(messages, user_id=req.user_id):
+                    yield f"data: {json.dumps({'content': chunk})}\n\n"
             else:
-                streamer = llm_local.stream_chat(messages)
-                
-            async for chunk in streamer:
-                yield f"data: {json.dumps({'content': chunk})}\n\n"
+                async for chunk in llm_local.stream_chat(messages, user_id=req.user_id):
+                    yield f"data: {json.dumps({'content': chunk})}\n\n"
         except asyncio.CancelledError:
             logger.info("Client disconnected during stream")
         except Exception as e:
